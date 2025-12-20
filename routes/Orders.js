@@ -7,7 +7,6 @@ let tokenCounter = 1; // 👈 reset daily in real-world app
 Orderrouter.post("/createorder", async (req, res) => {
   try {
     const data = req.body;
-    console.log("data ====", data);
     const order = new Order({ ...data, tokenNumber: tokenCounter++ });
     console.log("Order object before saving:", order);
     await order.save();
@@ -101,6 +100,4 @@ Orderrouter.delete("/deleteorder/:id", async (req, res) => {
     res.status(500).json({ message: "Failed to delete order" });
   }
 });
-
-
 module.exports = Orderrouter;

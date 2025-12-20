@@ -1,55 +1,62 @@
-require("dotenv").config();
-const express = require("express");
-const cookieParser = require("cookie-parser");
-const app = express();
-const http = require("http");
-const server = http.createServer(app);
-const connectDB = require("./config/db");
-const cors = require("cors");
-const path = require("path");
-app.use(
-  cors({
-    origin: "http://localhost:3000",
-    credentials: true,
-  })
-);
-app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// server.js
+require('dotenv').config();
+const express = require('express');
+const cookieParser = require('cookie-parser');
+const http = require('http');
+const path = require('path');
+const cors = require('cors');
 
+const connectDB = require('./config/db');
+
+const app = express();
+const server = http.createServer(app);
+
+// ---- CORS: allow Angular dev server (localhost:4200) ----
+app.use(cors({
+  origin: 'http://localhost:4200', // allow Angular dev server
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With']
+}));
+
+// ---- middlewares ----
+
+app.use(express.json());
 app.use(cookieParser());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// simple request logger
 app.use((req, res, next) => {
-  console.log("Incoming request:", req.method, req.url);
+  console.log(`${new Date().toISOString()}  ${req.method} ${req.url}`);
   next();
 });
 
-const router = require("./routes/Authroutes");
-const itemrouter = require("./routes/Items");
-const Orderrouter = require("./routes/Orders");
+// ---- routes ----
+const router = require('./routes/Authroutes');   // auth routes (login/register)
+const itemrouter = require('./routes/Items');
+const Orderrouter = require('./routes/Orders');
+const authMiddleware = require('./middleware/Authmiddleware');
 
+// Public auth routes (no auth middleware)
+app.use('/api/auth', router);
 
-const authMiddleware = require("./middleware/Authmiddleware.js");
+// Protected routes
+app.use('/api/items', authMiddleware, itemrouter);
+app.use('/api/orders', authMiddleware, Orderrouter);
 
-app.use("/api/auth", router);
-app.use("/api/items", authMiddleware, itemrouter);
-app.use("/api/orders", authMiddleware, Orderrouter);
-app.use(express.static(path.join(__dirname, '../CAFEPOSFRONTEND/dist/possystem')));
-console.log("Serving Angular from:", path.join(__dirname, '../CAFEPOSFRONTEND/dist/possystem'));
-// 👆 replace `frontend/dist/possystem` with your actual Angular dist folder
+// Optional health-check
+app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-// ✅ Catch-all to serve Angular's index.html for frontend routes
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, '../CAFEPOSFRONTEND/dist/possystem/index.html'));
-  console.log("serving path from", path.join(__dirname, '../CAFEPOSFRONTEND/dist/possystem/index.html'))
-
-});
-
+// ---- start server after DB connect ----
+const PORT = process.env.PORT || 3000;
 connectDB()
   .then(() => {
-    console.log("database connected successfully");
-    server.listen(3000, () => {
-      console.log("Server is running on port 3000");
+    console.log('Database connected successfully');
+    server.listen(PORT, () => {
+      console.log(`API server running on http://localhost:${PORT}`);
     });
   })
-  .catch((err) => {
-    console.log("database connection failed", err);
+  .catch(err => {
+    console.error('Database connection failed', err);
+    process.exit(1);
   });

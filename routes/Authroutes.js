@@ -8,6 +8,7 @@ const router = express.Router();
 
 // Admin Signup (Only run once, then delete or protect)
 router.post("/signup", async (req, res) => {
+  console.log("inside signup")
   const { email, password } = req.body;
   const existingAdmin = await adminschema.findOne({ email });
   if (existingAdmin) {
