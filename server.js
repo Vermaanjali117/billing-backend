@@ -14,10 +14,7 @@ const server = http.createServer(app);
 // ---- CORS: allow Angular dev server (localhost:4200) ----
 app.use(
   cors({
-    origin: [
-      "http://localhost:4200",
-      "https://friendly-dragon-95c0d2.netlify.app"
-    ],
+    origin:process.env.CORS_ORIGIN,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
