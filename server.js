@@ -24,8 +24,10 @@ app.use(
   })
 );
 
+
 // 🔴 THIS LINE IS CRITICAL
-app.options("*", cors());
+app.options("/*", cors());
+
 
 
 // ---- middlewares ----
