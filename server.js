@@ -16,19 +16,17 @@ app.use(
   cors({
     origin: [
       "http://localhost:4200",
-      "https://your-frontend-domain.onrender.com",
-      "https://friendly-dragon-95c0d2.netlify.app/login"
-    ], // allow Angular dev server
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    credentials: true,
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "Accept",
-      "X-Requested-With",
+      "https://friendly-dragon-95c0d2.netlify.app"
     ],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+// 🔴 THIS LINE IS CRITICAL
+app.options("*", cors());
+
 
 // ---- middlewares ----
 
