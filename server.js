@@ -24,12 +24,6 @@ app.use(
   })
 );
 
-
-// 🔴 THIS LINE IS CRITICAL
-app.options("/*", cors());
-
-
-
 // ---- middlewares ----
 
 app.use(express.json());
