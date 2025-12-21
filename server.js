@@ -17,6 +17,7 @@ app.use(
     origin: [
       "http://localhost:4200",
       "https://your-frontend-domain.onrender.com",
+      "httpsthrbelgiquebiltes.netlify.app"
     ], // allow Angular dev server
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
