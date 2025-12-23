@@ -8,7 +8,7 @@ const router = express.Router();
 
 // Admin Signup (Only run once, then delete or protect)
 router.post("/signup", async (req, res) => {
-  console.log("inside signup")
+  console.log("inside signup");
   const { email, password } = req.body;
   const existingAdmin = await adminschema.findOne({ email });
   if (existingAdmin) {
@@ -29,23 +29,24 @@ router.post("/signup", async (req, res) => {
 });
 
 // Admin Login
-router.post("/login", async (req,res)=>{
+router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const admin = await adminschema.findOne({ email });
   if (!admin) return res.status(401).json({ message: "Invalid credentials" });
 
   const isMatch = await bcrypt.compare(password, admin.password);
   if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
-   const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, {
+  const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, {
     expiresIn: "7d",
   });
- res.cookie('token', token, {
-  httpOnly: true,
- httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  maxAge: 24 * 60 * 60 * 1000,
-});
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    maxAge: 24 * 60 * 60 * 1000,
+  });
+
+
   res.json({ message: "loggedIn successfully", admin });
 });
 
