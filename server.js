@@ -14,7 +14,7 @@ const server = http.createServer(app);
 // ---- CORS: allow Angular dev server (localhost:4200) ----
 app.use(
   cors({
-    origin:process.env.CORS_ORIGIN,
+    origin: [process.env.CORS_ORIGIN, "http://localhost:4200"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -38,14 +38,18 @@ const router = require("./routes/Authroutes"); // auth routes (login/register)
 const itemrouter = require("./routes/Items");
 const Orderrouter = require("./routes/Orders");
 const authMiddleware = require("./middleware/Authmiddleware");
-
+const rowMaterialRouter = require("./routes/RowMaterialRoute");
+const RecipeRouter = require("./routes/RecipeRoute");
+const CustomerRouter = require("./routes/CustomerRouter");
 // Public auth routes (no auth middleware)
 app.use("/api/auth", router);
 
 // Protected routes
 app.use("/api/items", authMiddleware, itemrouter);
 app.use("/api/orders", authMiddleware, Orderrouter);
-
+app.use("/api/raw-materials", authMiddleware,rowMaterialRouter);
+app.use("/api/recipe", authMiddleware,RecipeRouter);
+app.use("/api/customer", authMiddleware,CustomerRouter);
 // Optional health-check
 app.get("/api/health", (req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })

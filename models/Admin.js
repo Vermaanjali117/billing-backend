@@ -1,15 +1,23 @@
 const mongoose = require("mongoose");
+
 const createadminSchema = new mongoose.Schema({
   email: {
-    type: String,  // use String instead of 'email'
+    type: String,
     required: true,
-    unique: true,  // optional: to prevent duplicate emails
+    unique: true,
   },
   password: {
-    type: String,  // use String instead of 'password'
+    type: String,
     required: true,
   },
-})
-const adminschema = mongoose.model("adminschema", createadminSchema);
 
+  // 🔥 ADD THIS FIELD
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Branch",
+    required: true,
+  },
+});
+
+const adminschema = mongoose.model("adminschema", createadminSchema);
 module.exports = adminschema;

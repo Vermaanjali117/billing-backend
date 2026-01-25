@@ -30,10 +30,7 @@ itemRouter.post("/addnewitem", upload.single("image"), async (req, res) => {
 // Edit item
 itemRouter.patch("/edititems", upload.single("image"), async (req, res) => {
   try {
-    console.log("req.body:", req.body); // Form fields
-    console.log("req.file:", req.file); // Uploaded file (if any)
-
-    const { _id } = req.body;
+   const { _id } = req.body;
     if (!_id) {
       return res.status(400).json({ message: "Item ID is required" });
     }
@@ -79,7 +76,6 @@ itemRouter.patch("/edititems", upload.single("image"), async (req, res) => {
 itemRouter.delete("/deleteitem", async (req, res) => {
   try {
     const { _id } = req.body;
-    console.log("_id ============", _id);
     if (_id) {
       const deletedItem = await Item.findByIdAndDelete(_id);
 
@@ -91,7 +87,7 @@ itemRouter.delete("/deleteitem", async (req, res) => {
 
     }
   } catch (error) {
-    console.log("error ====", error);
+   
   }
 });
 

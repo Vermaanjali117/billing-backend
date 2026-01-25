@@ -2,22 +2,24 @@ const jwt = require("jsonwebtoken");
 
 const authMiddleware = async (req, res, next) => {
   try {
-      console.log("Cookies received:", req.cookies);
-    const { token } = req.cookies;
+
+    const token = req.cookies?.token;
     if (!token) {
-      return res.status(401).send("Please Login");
+      return res.status(401).json({ message: "Please login" });
+      
     }
-    var decoded = await jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      return res.status(401).send("unauthorized user");
-    }
-    req.admin = decoded;
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // 🔥 Attach values cleanly
+    req.userId = decoded.userId;
+    req.branchId = decoded.branchId;
+
     next();
   } catch (error) {
-    return res.status(401).json({ message: "Invalid Token" });
+    console.error(error);
+    return res.status(401).json({ message: "Invalid token" });
   }
 };
 
 module.exports = authMiddleware;
-
-
