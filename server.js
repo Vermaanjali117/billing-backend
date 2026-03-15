@@ -17,7 +17,7 @@ app.use(cookieParser());
 // app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use(
   cors({
-    origin: "http://localhost:4200",
+    origin: ["http://localhost:4200", "https://thebelgiquebites.co.in"],
     credentials: true,
   }),
 );
