@@ -8,7 +8,6 @@ const router = express.Router();
 
 // Admin Signup (Only run once, then delete or protect)
 router.post("/signup", async (req, res) => {
-  console.log("inside signup");
   const { email, password, pincode } = req.body;
   const existingAdmin = await adminschema.findOne({ email });
   if (existingAdmin) {
@@ -44,6 +43,7 @@ router.post("/login", async (req, res) => {
 
     // 1️⃣ Find admin
     const admin = await adminschema.findOne({ email });
+    console.log("123456 ===",admin)
     if (!admin) {
       return res.status(401).json({ message: "Invalid credentials" });
     }

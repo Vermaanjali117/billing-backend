@@ -2,10 +2,32 @@ const mongoose = require("mongoose");
 
 const recipeSchema = new mongoose.Schema(
   {
-    itemId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Item",
+    productType: {
+      type: String,
+      enum: ["ITEM", "COMPOSITE"],
       required: true,
+    },
+
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      refPath: "productTypeRef",
+    },
+
+    productTypeRef: {
+      type: String,
+      required: true,
+      enum: ["Item", "RawMaterial"],
+    },
+
+    outputQuantity: {
+      type: Number,
+      required: true,
+    },
+
+    outputUnit: {
+      type: String,
+      enum: ["gm", "kg", "ml", "ltr", "pcs"],
     },
 
     materials: [
@@ -17,21 +39,15 @@ const recipeSchema = new mongoose.Schema(
         },
         quantityRequired: {
           type: Number,
-          required: true, // per 1 item
+          required: true,
         },
       },
     ],
 
-    branchId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Branch",
-      required: true,
-    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// One recipe per item per branch
-recipeSchema.index({ itemId: 1, branchId: 1 }, { unique: true });
+recipeSchema.index({ productId: 1}, { unique: true });
 
 module.exports = mongoose.model("Recipe", recipeSchema);

@@ -3,20 +3,37 @@ const Reciperouter = express.Router();
 const Recipe = require("../models/Recipe");
 const Items = require("../models/Item");
 const authMiddleware = require("../middleware/Authmiddleware");
+const convertToBaseUnit = require("../utils/unitconverter");
 
 Reciperouter.post("/save", authMiddleware, async (req, res) => {
   try {
-    const { itemId, materials } = req.body;
+    const { itemId, productId, materials, outputQuantity, outputUnit } =
+      req.body;
 
+    // Determine product
+    const finalProductId = itemId || productId;
+    const finalProductTypeRef = itemId ? "Item" : "RawMaterial";
+    const finalProductType = itemId ? "ITEM" : "COMPOSITE";
+
+    // 🔹 Convert recipe ingredients to base units
+    const normalizedMaterials = materials.map((m) => {
+      return {
+        rawMaterialId: m.rawMaterialId,
+        // 🔥 Use the helper here!
+        quantityRequired: convertToBaseUnit(m.quantityRequired, m.unit),
+      };
+    });
     const recipe = await Recipe.findOneAndUpdate(
       {
-        itemId,
-        branchId: req.branchId,
+        productId: finalProductId,
       },
       {
-        itemId,
-        materials,
-        branchId: req.branchId,
+        productId: finalProductId,
+        productType: finalProductType,
+        productTypeRef: finalProductTypeRef,
+        materials: normalizedMaterials,
+        outputQuantity: outputQuantity || 1,
+        outputUnit: outputUnit || "pcs",
       },
       {
         upsert: true,
@@ -25,13 +42,15 @@ Reciperouter.post("/save", authMiddleware, async (req, res) => {
     );
 
     res.json({
-      message: "Recipe saved successfully",
-      recipe,
       status: "success",
+      recipe,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to save recipe" });
+    console.error("SAVE RECIPE ERROR:", err);
+
+    res.status(500).json({
+      message: "Failed to save recipe",
+    });
   }
 });
 Reciperouter.put("/update_recipe/:id", authMiddleware, async (req, res) => {
@@ -40,16 +59,9 @@ Reciperouter.put("/update_recipe/:id", authMiddleware, async (req, res) => {
     const { materials } = req.body;
 
     const recipe = await Recipe.findOneAndUpdate(
-      {
-        _id: recipeId,
-        branchId: req.branchId,
-      },
-      {
-        materials,
-      },
-      {
-        new: true,
-      },
+      { _id: recipeId },
+      { materials },
+      { new: true },
     );
 
     if (!recipe) {
@@ -76,8 +88,7 @@ Reciperouter.put("/update_recipe/:id", authMiddleware, async (req, res) => {
 Reciperouter.get("/item/:itemId", authMiddleware, async (req, res) => {
   try {
     const recipe = await Recipe.findOne({
-      itemId: req.params.itemId,
-      branchId: req.branchId,
+      productId: req.params.itemId,
     }).populate("materials.rawMaterialId");
 
     res.json(recipe);
@@ -89,7 +100,6 @@ Reciperouter.delete("/delete/:id", async (req, res) => {
   try {
     const deleted = await Recipe.findOneAndDelete({
       _id: req.params.id,
-      branchId: req.branchId,
     });
 
     if (!deleted) {
@@ -114,15 +124,11 @@ Reciperouter.delete("/delete/:id", async (req, res) => {
 // GET ALL RECIPES (branch-wise)
 Reciperouter.get("/savedrecipelist", authMiddleware, async (req, res) => {
   try {
-    const recipes = await Recipe.find({
-      branchId: req.branchId,
-    })
-      // ✅ attach item details
+    const recipes = await Recipe.find()
       .populate({
-        path: "itemId",
-        select: "name price",
+        path: "productId",
+        select: "name price unit",
       })
-      // ✅ attach raw material details
       .populate({
         path: "materials.rawMaterialId",
         select: "name unit",
@@ -134,9 +140,72 @@ Reciperouter.get("/savedrecipelist", authMiddleware, async (req, res) => {
       recipes,
     });
   } catch (err) {
-    console.error(err);
+    console.error("FETCH_RECIPE_ERROR:", err);
     res.status(500).json({ message: "Failed to fetch recipes" });
   }
 });
+Reciperouter.post("/produce-material", authMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
+  try {
+    const { materialId, quantity } = req.body; // quantity is how much composite you want to make (e.g., 5 units of Premix)
+
+    const compositeMaterial =
+      await RawMaterial.findById(materialId).session(session);
+
+    if (!compositeMaterial || compositeMaterial.type !== "COMPOSITE") {
+      throw new Error("Invalid composite material");
+    }
+
+    const recipe = await Recipe.findOne({
+      productId: materialId,
+      productType: "COMPOSITE",
+    }).session(session);
+
+    if (!recipe) {
+      throw new Error("Recipe not found for composite material");
+    }
+
+    // 1️⃣ Deduct raw materials from THIS BRANCH stock
+    for (const mat of recipe.materials) {
+      const totalRequired = mat.quantityRequired * quantity;
+
+      const branchStock = await BranchStock.findOne({
+        branchId: req.branchId,
+        rawMaterialId: mat.rawMaterialId,
+      }).session(session);
+
+      if (!branchStock || branchStock.quantity < totalRequired) {
+        const raw = await RawMaterial.findById(mat.rawMaterialId);
+        throw new Error(`Insufficient stock for ${raw?.name || "ingredient"}`);
+      }
+
+      await BranchStock.updateOne(
+        { _id: branchStock._id },
+        { $inc: { quantity: -totalRequired } },
+        { session },
+      );
+    }
+
+    // 2️⃣ Increase the composite material stock for THIS BRANCH
+    await BranchStock.updateOne(
+      {
+        branchId: req.branchId,
+        rawMaterialId: materialId,
+      },
+      { $inc: { quantity: quantity } },
+      { session, upsert: true },
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json({ status: "success", message: "Production successful" });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    res.status(400).json({ message: err.message });
+  }
+});
 module.exports = Reciperouter;

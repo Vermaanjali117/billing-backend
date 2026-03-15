@@ -4,6 +4,7 @@ const Order = require("../models/Order");
 const InventoryHistory = require("../models/InventoryHistory");
 const Item = require("../models/Item");
 const Counter = require("../models/Counter");
+const BranchStock = require("../models/BranchStock");
 const Customer = require("../models/Customers");
 const RawMaterial = require("../models/RowMaterial");
 const Recipe = require("../models/Recipe");
@@ -20,10 +21,13 @@ Orderrouter.post("/createorder", authMiddleware, async (req, res) => {
     if (!items || items.length === 0) {
       throw new Error("Order must contain at least one item");
     }
+
+    // 1️⃣ HANDLE CUSTOMER DATA
     let customer = await Customer.findOne({
       phone: orderData.phone,
       branchId: req.branchId,
     }).session(session);
+
     if (!customer) {
       await Customer.create(
         [
@@ -41,56 +45,61 @@ Orderrouter.post("/createorder", authMiddleware, async (req, res) => {
       await Customer.updateOne(
         { _id: customer._id },
         {
-          $set: {
-            name: orderData.customerName,
-            lastOrderAt: new Date(),
-          },
+          $set: { name: orderData.customerName, lastOrderAt: new Date() },
           $inc: { totalOrders: 1 },
         },
         { session },
       );
     }
 
-    // ✅ STEP 2: BUILD MATERIAL MAP
+    // 2️⃣ BUILD MATERIAL MAP & VALIDATE RECIPES
     const materialMap = {};
-
     for (const item of items) {
       const recipe = await Recipe.findOne({
-        itemId: item.itemid,
-        branchId: req.branchId,
+        productType: "ITEM",
+        productId: item.itemid,
       }).session(session);
 
       if (!recipe) {
-        throw new Error("Recipe not found for item");
+        throw new Error(`Recipe not found for item: ${item.itemid}`);
       }
 
       for (const mat of recipe.materials) {
         const usedQty = mat.quantityRequired * item.qty;
         const key = mat.rawMaterialId.toString();
-
         materialMap[key] = (materialMap[key] || 0) + usedQty;
       }
     }
 
-    // ✅ STEP 3: VALIDATE STOCK
+    // 3️⃣ VALIDATE AND DEDUCT STOCK
     for (const materialId in materialMap) {
-      const material = await RawMaterial.findOne({
-        _id: materialId,
+      const requiredQtyInGrams = materialMap[materialId];
+      const branchStock = await BranchStock.findOne({
         branchId: req.branchId,
+        rawMaterialId: materialId,
       }).session(session);
 
-      if (!material || material.quantity < materialMap[materialId]) {
-        throw new Error(`Insufficient stock`);
+      const matInfo = await RawMaterial.findById(materialId);
+      let availableQty = branchStock ? branchStock.quantity : 0;
+
+      if (matInfo.unit === "kg" || matInfo.unit === "ltr") {
+        availableQty = availableQty * 1000;
       }
-    }
 
-    // ✅ STEP 4: DEDUCT STOCK + HISTORY
-    for (const materialId in materialMap) {
-      const qty = materialMap[materialId];
+      if (availableQty < requiredQtyInGrams) {
+        throw new Error(
+          `Insufficient stock for ${matInfo.name}. Need ${requiredQtyInGrams}gm, have ${availableQty}gm`,
+        );
+      }
 
-      await RawMaterial.updateOne(
-        { _id: materialId, branchId: req.branchId },
-        { $inc: { quantity: -qty } },
+      let deductionAmount = requiredQtyInGrams;
+      if (matInfo.unit === "kg" || matInfo.unit === "ltr") {
+        deductionAmount = deductionAmount / 1000;
+      }
+
+      await BranchStock.updateOne(
+        { _id: branchStock._id },
+        { $inc: { quantity: -deductionAmount } },
         { session },
       );
 
@@ -98,7 +107,7 @@ Orderrouter.post("/createorder", authMiddleware, async (req, res) => {
         [
           {
             rawMaterialId: materialId,
-            change: -qty,
+            change: -deductionAmount,
             reason: "ORDER",
             branchId: req.branchId,
             createdBy: req.userId,
@@ -108,14 +117,13 @@ Orderrouter.post("/createorder", authMiddleware, async (req, res) => {
       );
     }
 
-    // ✅ STEP 5: BUILD FINAL ITEMS
+    // 4️⃣ FINALIZE ORDER DETAILS & CALCULATE TOTALS
     const finalItems = [];
     let subTotal = 0;
 
     for (const item of items) {
       const dbItem = await Item.findById(item.itemid).session(session);
       const total = dbItem.price * item.qty;
-
       subTotal += total;
 
       finalItems.push({
@@ -125,71 +133,61 @@ Orderrouter.post("/createorder", authMiddleware, async (req, res) => {
         total,
       });
     }
-    // ✅ STEP 0: Get Today's Date String (2026-01-21)
-    const today = new Date().toISOString().split("T")[0];
 
-    // ✅ STEP 1: Increment/Get Token
-    // We use the 'session' so this is part of the atomic transaction
+    // 5️⃣ EXTRACT DISCOUNT FIELDS FROM FRONTEND PAYLOAD
+    // We get these from orderData because of the {...orderData} rest operator above
+    const discountAmount = Number(orderData.discountAmount || 0);
+    const discountType = orderData.discountType || null;
+    const discountValue = Number(orderData.discountValue || 0);
+    const discountReason = orderData.discountReason || null;
+
+    // Generate Token Number
+    const today = new Date().toISOString().split("T")[0];
     const counter = await Counter.findOneAndUpdate(
       { branchId: req.branchId, date: today },
       { $inc: { seq: 1 } },
-      {
-        new: true,
-        upsert: true,
-        session: session, // Very important for transactions!
-      },
+      { new: true, upsert: true, session },
     );
 
-    if (!counter) {
-      throw new Error("Failed to generate token number");
-    }
-    const newTokenNumber = counter.seq;
-    // ✅ STEP 6: SAVE ORDER
+    // 6️⃣ CREATE THE ORDER OBJECT WITH DISCOUNT
     const order = new Order({
       orderNumber: `ORD-${Date.now()}`,
-      tokenNumber: newTokenNumber,
+      tokenNumber: counter.seq,
       date: new Date(),
-
       customerName: orderData.customerName,
       phone: orderData.phone,
       paymentMode: orderData.paymentMode,
       ordertype: orderData.ordertype,
-
       items: finalItems,
-      subTotal,
-      delivery: orderData.delivery || 0,
-      handling: orderData.handling || 0,
-      discountAmount: orderData.discountAmount || 0,
-      discountType: orderData.discountType || null,
-      discountValue: orderData.discountValue || 0,
-      discountReason: orderData.discountReason || null,
-      grandTotal: subTotal,
-
+      subTotal: subTotal,
+      // ✅ FIX: Save the actual discount data
+      discountAmount: discountAmount,
+      discountType: discountType,
+      discountValue: discountValue,
+      discountReason: discountReason,
+      // ✅ FIX: Ensure grandTotal is subtotal minus the discount
+      grandTotal: subTotal - discountAmount,
       branchId: req.branchId,
       createdBy: req.userId,
     });
 
     await order.save({ session });
 
-    // ✅ COMMIT ONLY AT THE END
     await session.commitTransaction();
     session.endSession();
 
     return res.status(201).json({
       status: "success",
-      message: "Order + customer + inventory saved ✅",
+      message: "Order processed successfully",
       order,
     });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-
-    return res.status(400).json({
-      message: err.message || "Order failed",
-    });
+    console.error("ORDER ERROR:", err);
+    return res.status(400).json({ message: err.message || "Order failed" });
   }
 });
-
 // Get all orders
 Orderrouter.get("/getorderlist", authMiddleware, async (req, res) => {
   try {
@@ -270,8 +268,6 @@ Orderrouter.get("/salessummery", authMiddleware, async (req, res) => {
     res.status(500).json({ message: "Error fetching sales" });
   }
 });
-
-
 
 // Delete an order by ID
 Orderrouter.delete("/deleteorder/:id", async (req, res) => {

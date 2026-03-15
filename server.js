@@ -3,7 +3,7 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const http = require("http");
 const path = require("path");
-
+const cors = require("cors");
 const connectDB = require("./config/db");
 
 const app = express();
@@ -14,8 +14,13 @@ app.use(express.json());
 app.use(cookieParser());
 
 // serve uploads if needed
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-
+// app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use(
+  cors({
+    origin: "http://localhost:4200",
+    credentials: true,
+  }),
+);
 // simple request logger
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()}  ${req.method} ${req.url}`);
