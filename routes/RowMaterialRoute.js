@@ -172,29 +172,36 @@ router.get("/get-row-material-list", authMiddleware, async (req, res) => {
 
 router.patch("/update/:id", authMiddleware, async (req, res) => {
   try {
-    const materialId = req.params.id;
-    // Get both quantity and unit from the request body
+    const materialId = req.params.id; // This is the RawMaterial ObjectId
     const { quantity, unit } = req.body;
 
-    const updated = await BranchStock.updateOne(
+    // 1. Update the Quantity in BranchStock
+    const stockUpdate = await BranchStock.updateOne(
       {
         branchId: req.branchId,
         rawMaterialId: materialId,
       },
       {
-        // $inc handles the math for stock levels
-        $inc: { quantity: quantity },
-        // $set handles the replacement of strings/static values
-        $set: { unit: unit },
+        $set: { quantity: Number(quantity) }, // Ensure it's a number
       },
     );
 
-    if (updated.matchedCount === 0) {
-      return res.status(404).json({ message: "Raw material not found" });
+    // 2. Update the Unit in RawMaterial (since it's common for all branches)
+    if (unit) {
+      await RawMaterial.updateOne(
+        { _id: materialId },
+        { $set: { unit: unit } },
+      );
+    }
+
+    if (stockUpdate.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ message: "Raw material stock record not found" });
     }
 
     res.json({
-      message: "Stock and Unit updated successfully",
+      message: "Stock and Global Unit updated successfully",
       status: "success",
     });
   } catch (err) {

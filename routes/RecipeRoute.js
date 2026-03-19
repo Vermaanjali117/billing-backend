@@ -19,7 +19,9 @@ Reciperouter.post("/save", authMiddleware, async (req, res) => {
     const normalizedMaterials = materials.map((m) => {
       return {
         rawMaterialId: m.rawMaterialId,
-        // 🔥 Use the helper here!
+        // 🔥 Store the unit so it can be retrieved later!
+        unit: m.unit,
+        // Use your helper for the quantity
         quantityRequired: convertToBaseUnit(m.quantityRequired, m.unit),
       };
     });
@@ -44,6 +46,7 @@ Reciperouter.post("/save", authMiddleware, async (req, res) => {
     res.json({
       status: "success",
       recipe,
+      message:'Recipe created successfully'
     });
   } catch (err) {
     console.error("SAVE RECIPE ERROR:", err);

@@ -41,13 +41,18 @@ const recipeSchema = new mongoose.Schema(
           type: Number,
           required: true,
         },
+        // 🔹 ADD THIS FIELD TO SAVE THE UNIT
+        unit: {
+          type: String,
+          enum: ["gm", "kg", "ml", "ltr", "pcs"],
+          required: true,
+        },
       },
     ],
-
   },
   { timestamps: true },
 );
 
-recipeSchema.index({ productId: 1}, { unique: true });
+recipeSchema.index({ productId: 1 }, { unique: true });
 
 module.exports = mongoose.model("Recipe", recipeSchema);
