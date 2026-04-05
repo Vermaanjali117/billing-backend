@@ -7,6 +7,5 @@ const counterSchema = new mongoose.Schema({
 
 // Compound index to quickly find the right counter
 counterSchema.index({ branchId: 1, date: 1 }, { unique: true });
-const Counter = mongoose.model("Counter", counterSchema);
 
 module.exports = mongoose.model("Counter", counterSchema);

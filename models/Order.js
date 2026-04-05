@@ -39,6 +39,19 @@ const orderSchema = new mongoose.Schema(
     discountValue: { type: Number, default: 0 },
     discountReason: { type: String, default: null },
 
+    // ← ADD THESE 2 NEW FIELDS HERE
+    appliedOfferId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Offer",
+      default: null,
+    },
+    appliedOfferName: {
+      type: String,
+      default: null,
+    },
+
+    grandTotal: { type: Number, required: true },
+
     grandTotal: { type: Number, required: true },
 
     ordertype: {
@@ -61,7 +74,7 @@ const orderSchema = new mongoose.Schema(
   },
   {
     timestamps: true, // ✅ CORRECT PLACE
-  }
+  },
 );
 
 module.exports = mongoose.model("Order", orderSchema);

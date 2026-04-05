@@ -23,12 +23,21 @@ const rawMaterialSchema = new mongoose.Schema(
         rawMaterialId: {
           type: mongoose.Schema.Types.ObjectId,
           ref: "RawMaterial",
+          required: true,
         },
-        quantityRequired: Number,
+        quantityRequired: {
+          type: Number,
+          required: true,
+        },
+        unit: {
+          type: String,
+          enum: ["kg", "gm", "ml", "ltr", "pcs"],
+          required: true,
+        },
       },
     ],
   },
-  { timestamps: true },
+  { timestamps: true }
 );
 
 module.exports = mongoose.model("RawMaterial", rawMaterialSchema);

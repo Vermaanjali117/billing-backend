@@ -35,6 +35,7 @@ const authMiddleware = require("./middleware/Authmiddleware");
 const rowMaterialRouter = require("./routes/RowMaterialRoute");
 const RecipeRouter = require("./routes/RecipeRoute");
 const CustomerRouter = require("./routes/CustomerRouter");
+const OfferRoute = require("./routes/OfferRoute");
 
 // Public auth routes
 app.use("/api/auth", router);
@@ -45,7 +46,7 @@ app.use("/api/orders", authMiddleware, Orderrouter);
 app.use("/api/raw-materials", authMiddleware, rowMaterialRouter);
 app.use("/api/recipe", authMiddleware, RecipeRouter);
 app.use("/api/customer", authMiddleware, CustomerRouter);
-
+app.use("/api/offer", authMiddleware, OfferRoute);
 // Health check
 app.get("/api/health", (req, res) =>
   res.json({ ok: true, time: new Date().toISOString() }),

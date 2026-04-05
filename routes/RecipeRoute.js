@@ -4,6 +4,9 @@ const Recipe = require("../models/Recipe");
 const Items = require("../models/Item");
 const authMiddleware = require("../middleware/Authmiddleware");
 const convertToBaseUnit = require("../utils/unitconverter");
+const mongoose = require("mongoose");
+const RawMaterial = require("../models/RowMaterial");
+const BranchStock = require("../models/BranchStock");
 
 Reciperouter.post("/save", authMiddleware, async (req, res) => {
   try {
@@ -46,7 +49,7 @@ Reciperouter.post("/save", authMiddleware, async (req, res) => {
     res.json({
       status: "success",
       recipe,
-      message:'Recipe created successfully'
+      message: "Recipe created successfully",
     });
   } catch (err) {
     console.error("SAVE RECIPE ERROR:", err);
@@ -61,9 +64,16 @@ Reciperouter.put("/update_recipe/:id", authMiddleware, async (req, res) => {
     const recipeId = req.params.id;
     const { materials } = req.body;
 
+    // Same unit conversion as /save — store quantities in base units (gm/ml/pcs)
+    const normalizedMaterials = materials.map((m) => ({
+      rawMaterialId: m.rawMaterialId,
+      unit: m.unit,
+      quantityRequired: convertToBaseUnit(m.quantityRequired, m.unit),
+    }));
+
     const recipe = await Recipe.findOneAndUpdate(
       { _id: recipeId },
-      { materials },
+      { materials: normalizedMaterials },
       { new: true },
     );
 

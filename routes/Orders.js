@@ -72,47 +72,38 @@ Orderrouter.post("/createorder", authMiddleware, async (req, res) => {
     }
 
     // 3️⃣ VALIDATE AND DEDUCT STOCK
+    // Recipe materials are stored in base units (gm/ml/pcs) by RecipeRoute.
+    // BranchStock is also in base units. So we can compare and deduct directly.
     for (const materialId in materialMap) {
-      const requiredQtyInGrams = materialMap[materialId];
+      const requiredBase = materialMap[materialId]; // already in base units
       const branchStock = await BranchStock.findOne({
         branchId: req.branchId,
         rawMaterialId: materialId,
       }).session(session);
 
       const matInfo = await RawMaterial.findById(materialId);
-      let availableQty = branchStock ? branchStock.quantity : 0;
+      const availableBase = branchStock ? branchStock.quantity : 0;
 
-      if (matInfo.unit === "kg" || matInfo.unit === "ltr") {
-        availableQty = availableQty * 1000;
-      }
-
-      if (availableQty < requiredQtyInGrams) {
+      if (availableBase < requiredBase) {
         throw new Error(
-          `Insufficient stock for ${matInfo.name}. Need ${requiredQtyInGrams}gm, have ${availableQty}gm`,
+          `Insufficient stock for ${matInfo.name}. Need ${requiredBase} ${matInfo.unit} (base), have ${availableBase}`
         );
-      }
-
-      let deductionAmount = requiredQtyInGrams;
-      if (matInfo.unit === "kg" || matInfo.unit === "ltr") {
-        deductionAmount = deductionAmount / 1000;
       }
 
       await BranchStock.updateOne(
         { _id: branchStock._id },
-        { $inc: { quantity: -deductionAmount } },
+        { $inc: { quantity: -requiredBase } },
         { session },
       );
 
       await InventoryHistory.create(
-        [
-          {
-            rawMaterialId: materialId,
-            change: -deductionAmount,
-            reason: "ORDER",
-            branchId: req.branchId,
-            createdBy: req.userId,
-          },
-        ],
+        [{
+          rawMaterialId: materialId,
+          change: -requiredBase,
+          reason: "ORDER",
+          branchId: req.branchId,
+          createdBy: req.userId,
+        }],
         { session },
       );
     }
