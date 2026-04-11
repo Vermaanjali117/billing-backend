@@ -28,112 +28,230 @@ const mongoose = require("mongoose");
 
 function toDisplayUnit(baseQty, unit) {
   const u = (unit || "").toLowerCase().trim();
-  if (u === "kg")  return +(baseQty / 1000).toFixed(4);
+  if (u === "kg") return +(baseQty / 1000).toFixed(4);
   if (u === "ltr") return +(baseQty / 1000).toFixed(4);
-  return baseQty; // gm, ml, pcs → no conversion
+  return baseQty;
 }
 
-// ─── ADD RAW MATERIAL ───────────────────────────────────────
+// Convert unit label to its base: kg→gm, ltr→ml, others unchanged
+function toBaseUnitLabel(unit) {
+  const u = (unit || "").toLowerCase().trim();
+  if (u === "kg") return "gm";
+  if (u === "ltr") return "ml";
+  return u;
+}
+
+// Normalize ingredients: convert quantityRequired to base units AND fix unit label
+// e.g. { quantityRequired: 1, unit: "kg" } → { quantityRequired: 1000, unit: "gm" }
+function normalizeIngredients(ingredients) {
+  if (!ingredients || !Array.isArray(ingredients)) return [];
+  return ingredients.map((ing) => ({
+    rawMaterialId: ing.rawMaterialId,
+    quantityRequired: convertToBaseUnit(Number(ing.quantityRequired), ing.unit),
+    unit: toBaseUnitLabel(ing.unit),
+  }));
+}
+
+// ─── ADD RAW MATERIAL / COMPOSITE ─────────────────────────────
 router.post("/add", authMiddleware, async (req, res) => {
   try {
-    const { name, unit, quantity, alertAt, type, ingredients } = req.body;
+    const {
+      name,
+      unit,
+      quantity,
+      alertAt,
+      type,
+      ingredients,
+      yieldQuantity, // ✅ NEW
+      yieldUnit, // ✅ NEW
+    } = req.body;
 
+    // ✅ Basic validation
     if (!name || !unit) {
-      return res.status(400).json({ status: "error", message: "Name and unit are required" });
+      return res.status(400).json({
+        status: "error",
+        message: "Name and unit are required",
+      });
     }
 
+    // ✅ Composite validation
+    if (type === "COMPOSITE") {
+      if (!yieldQuantity || Number(yieldQuantity) <= 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Yield quantity is required for composite items",
+        });
+      }
+
+      if (!ingredients || !ingredients.length) {
+        return res.status(400).json({
+          status: "error",
+          message: "Ingredients are required for composite items",
+        });
+      }
+    }
+
+    // 🔍 Debug (remove later)
+    console.log("BODY:", req.body);
+
+    // 🔍 Check existing material
     let material = await RawMaterial.findOne({ name: name.trim() });
 
     if (!material) {
       material = await RawMaterial.create({
         name: name.trim(),
         unit,
+
+        // ✅ Always store alert in base unit
         alertAt: alertAt ? convertToBaseUnit(Number(alertAt), unit) : 0,
+
         type: type || "RAW",
-        ingredients: type === "COMPOSITE" ? ingredients || [] : [],
+
+        // ✅ Ingredients for composite
+        ingredients:
+          type === "COMPOSITE" ? normalizeIngredients(ingredients) : [],
+
+        // ✅ NEW: Yield logic (core fix)
+        yieldQuantity: type === "COMPOSITE" ? Number(yieldQuantity) : 0,
+
+        yieldUnit:
+          type === "COMPOSITE"
+            ? yieldUnit || "UNIT" // 🔥 default to UNIT (pieces)
+            : unit,
       });
     }
 
-    // Convert initial quantity to base units before storing
+    // ✅ Convert initial quantity to base unit
     const baseQty = convertToBaseUnit(Number(quantity) || 0, unit);
 
+    // ✅ Insert into BranchStock if not exists
     await BranchStock.updateOne(
-      { branchId: req.branchId, rawMaterialId: material._id },
-      { $setOnInsert: { quantity: baseQty } },
+      {
+        branchId: req.branchId,
+        rawMaterialId: material._id,
+      },
+      {
+        $setOnInsert: { quantity: baseQty },
+      },
       { upsert: true },
     );
 
-    res.status(201).json({ status: "success", material });
+    return res.status(201).json({
+      status: "success",
+      material,
+    });
+  } catch (err) {
+    console.error("ADD MATERIAL ERROR:", err);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
+    });
+  }
+});
+// ─── BATCH PREVIEW ────────────────────────────────────────────
+// Returns what 1 batch will consume and produce — no stock changes.
+router.get("/batch-preview/:premixId", authMiddleware, async (req, res) => {
+  try {
+    const material = await RawMaterial.findById(req.params.premixId).populate(
+      "ingredients.rawMaterialId",
+      "name unit",
+    );
+
+    if (!material || material.type !== "COMPOSITE") {
+      return res.status(404).json({ message: "Composite material not found" });
+    }
+    if (!material.yieldQuantity || material.yieldQuantity <= 0) {
+      return res.status(400).json({
+        message: `Batch yield not set for ${material.name}. Edit the material and set the yield quantity.`,
+      });
+    }
+
+    const ingredientList = material.ingredients.map((item) => {
+      const mat = item.rawMaterialId;
+      return {
+        name: mat?.name || "Unknown",
+        required: item.quantityRequired,
+        unit: item.unit, // already base unit (gm/ml)
+      };
+    });
+
+    res.json({
+      status: "success",
+      preview: {
+        materialName: material.name,
+        ingredients: ingredientList,
+        yieldQuantity: material.yieldQuantity,
+        yieldUnit: material.yieldUnit || material.unit,
+      },
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Failed to load batch preview" });
   }
 });
 
-// ─── PRODUCE COMPOSITE (e.g. make Premix from Flour + Milk + Sugar) ──
+// ─── PRODUCE COMPOSITE ───────────────────────────────────────
+// Always 1 fixed batch. Deducts ingredients, adds yieldQuantity to stock.
+// Frontend sends only { premixId } — no qty input needed.
 router.post("/produce-composite", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { premixId, qty } = req.body;
-
-    if (!premixId || !qty) throw new Error("premixId and qty are required");
+    const { premixId } = req.body;
+    if (!premixId) throw new Error("premixId is required");
 
     const premixObjectId = new mongoose.Types.ObjectId(premixId);
-    const compositeMaterial = await RawMaterial.findById(premixObjectId).session(session);
+    const compositeMaterial =
+      await RawMaterial.findById(premixObjectId).session(session);
 
     if (!compositeMaterial || compositeMaterial.type !== "COMPOSITE") {
       throw new Error("Composite material not found");
     }
-    if (!compositeMaterial.ingredients || compositeMaterial.ingredients.length === 0) {
+    if (
+      !compositeMaterial.ingredients ||
+      compositeMaterial.ingredients.length === 0
+    ) {
       throw new Error("No ingredients defined for this composite material");
     }
 
-    // qty is what the user typed (e.g. "2" meaning 2 kg of premix)
-    // Convert to base units so we can scale the recipe (which is also in base units)
-    // Recipe ingredient: 500 gm per 1 kg premix → stored as 500 gm base
-    // To make 2 kg premix: need 500 * (2000 / 1000) = 1000 gm = 1 kg flour
-    const qtyInBase = convertToBaseUnit(Number(qty), compositeMaterial.unit);
+    const yieldQty = compositeMaterial.yieldQuantity;
+    const yieldUnit = compositeMaterial.yieldUnit || compositeMaterial.unit;
 
-    // Recipe is per 1 base unit of premix output (1 gm of premix)
-    // So scale factor = qtyInBase (how many gm of premix we want)
-    // But the recipe ingredients are defined per 1 USER unit (e.g. per 1 kg)
-    // So scale factor = qty (user value), not qtyInBase
-    // e.g. recipe: 500 gm flour per 1 kg premix. Making 2 kg → 500 * 2 = 1000 gm
-    const scaleFactor = Number(qty);
-
-    // Build map of materialId → how much base-unit quantity to deduct
-    const materialMap = {};
-    for (const item of compositeMaterial.ingredients) {
-      const materialId = item.rawMaterialId.toString();
-      // item.quantityRequired is stored in base units (gm/ml/pcs)
-      // item.unit tells us the original unit context (for reference only)
-      const required = item.quantityRequired * scaleFactor;
-      materialMap[materialId] = (materialMap[materialId] || 0) + required;
+    if (!yieldQty || yieldQty <= 0) {
+      throw new Error(
+        `Batch yield not defined for ${compositeMaterial.name}. Please edit the material and set the yield quantity.`,
+      );
     }
 
-    // Validate stock (everything in base units now)
+    // Build deduction map — quantityRequired already in base units (gm/ml)
+    const materialMap = {};
+    for (const item of compositeMaterial.ingredients) {
+      const id = item.rawMaterialId.toString();
+      materialMap[id] = (materialMap[id] || 0) + item.quantityRequired;
+    }
+
+    // Validate stock
     for (const materialId in materialMap) {
       const objectId = new mongoose.Types.ObjectId(materialId);
-      const stock = await BranchStock.findOne({ branchId: req.branchId, rawMaterialId: objectId }).session(session);
+      const stock = await BranchStock.findOne({
+        branchId: req.branchId,
+        rawMaterialId: objectId,
+      }).session(session);
       const material = await RawMaterial.findById(objectId).session(session);
       if (!material) throw new Error("Ingredient material not found");
 
       const available = stock ? stock.quantity : 0;
       const required = materialMap[materialId];
-
       if (available < required) {
-        // Show user-friendly units in error message
-        const availDisplay = toDisplayUnit(available, material.unit);
-        const reqDisplay = toDisplayUnit(required, material.unit);
         throw new Error(
-          `Insufficient stock for ${material.name}. Need ${reqDisplay} ${material.unit}, have ${availDisplay} ${material.unit}`
+          `Insufficient stock for ${material.name}. Need ${toDisplayUnit(required, material.unit)} ${material.unit}, have ${toDisplayUnit(available, material.unit)} ${material.unit}`,
         );
       }
     }
 
-    // Deduct ingredients from stock
+    // Deduct all ingredients
     for (const materialId in materialMap) {
       const objectId = new mongoose.Types.ObjectId(materialId);
       const result = await BranchStock.updateOne(
@@ -141,21 +259,50 @@ router.post("/produce-composite", authMiddleware, async (req, res) => {
         { $inc: { quantity: -materialMap[materialId] } },
         { session },
       );
-      if (result.matchedCount === 0) throw new Error(`Stock entry not found for ingredient`);
+      if (result.matchedCount === 0)
+        throw new Error("Stock entry not found for ingredient");
+
+      await InventoryHistory.create(
+        [
+          {
+            rawMaterialId: materialId,
+            change: -materialMap[materialId],
+            reason: "RESTOCK",
+            branchId: req.branchId,
+            createdBy: req.userId,
+          },
+        ],
+        { session },
+      );
     }
 
-    // Add produced premix to stock (in base units)
+    // Add yield to composite stock
+    const yieldInBase = convertToBaseUnit(yieldQty, yieldUnit);
     await BranchStock.updateOne(
       { branchId: req.branchId, rawMaterialId: premixObjectId },
-      { $inc: { quantity: qtyInBase } },
+      { $inc: { quantity: yieldInBase } },
       { upsert: true, session },
     );
 
-    await session.commitTransaction();
+    await InventoryHistory.create(
+      [
+        {
+          rawMaterialId: premixObjectId.toString(),
+          change: yieldInBase,
+          reason: "RESTOCK",
+          branchId: req.branchId,
+          createdBy: req.userId,
+        },
+      ],
+      { session },
+    );
 
+    await session.commitTransaction();
     res.json({
       status: "success",
-      message: `${qty} ${compositeMaterial.unit} of ${compositeMaterial.name} produced successfully`,
+      message: `1 batch produced: added ${yieldQty} ${yieldUnit} of ${compositeMaterial.name} to stock`,
+      yieldQuantity: yieldQty,
+      yieldUnit,
     });
   } catch (err) {
     await session.abortTransaction();
@@ -182,7 +329,7 @@ router.get("/get-row-material-list", authMiddleware, async (req, res) => {
       return {
         ...m.toObject(),
         quantity: toDisplayUnit(baseQty, m.unit), // convert for display
-        quantityBase: baseQty,                     // raw base value (optional, useful for frontend math)
+        quantityBase: baseQty, // raw base value (optional, useful for frontend math)
         // Also convert alertAt for display
         alertAt: toDisplayUnit(m.alertAt || 0, m.unit),
       };
@@ -198,40 +345,50 @@ router.get("/get-row-material-list", authMiddleware, async (req, res) => {
 router.patch("/update/:id", authMiddleware, async (req, res) => {
   try {
     const materialId = req.params.id;
-    const { quantity, unit, name, ingredients, type, alertAt, outputQuantity, outputUnit } = req.body;
+    const { unit, name, ingredients, type, alertAt, yieldQuantity, yieldUnit } =
+      req.body;
 
-    // Fetch current material to know the unit if not being changed
     const existing = await RawMaterial.findById(materialId).select("unit");
     const effectiveUnit = unit || existing?.unit;
 
-    // Store stock in base units
-    if (quantity !== undefined) {
-      const baseQty = convertToBaseUnit(Number(quantity), effectiveUnit);
-      await BranchStock.updateOne(
-        { branchId: req.branchId, rawMaterialId: materialId },
-        { $set: { quantity: baseQty } },
-      );
-    }
-
-    // Prepare RawMaterial field updates
     const updateFields = {};
+
     if (name) updateFields.name = name;
     if (unit) updateFields.unit = unit;
-    if (alertAt !== undefined) updateFields.alertAt = convertToBaseUnit(Number(alertAt), effectiveUnit);
+
+    if (alertAt !== undefined) {
+      updateFields.alertAt = convertToBaseUnit(Number(alertAt), effectiveUnit);
+    }
+
     if (type) updateFields.type = type;
 
-    if (type === "COMPOSITE") {
-      if (ingredients) updateFields.ingredients = ingredients;
-      if (outputQuantity !== undefined) updateFields.outputQuantity = outputQuantity;
-      if (outputUnit) updateFields.outputUnit = outputUnit;
+    // ✅ COMPOSITE LOGIC
+    if (type === "COMPOSITE" || (!type && ingredients)) {
+      if (ingredients) {
+        updateFields.ingredients = normalizeIngredients(ingredients);
+      }
+
+      if (yieldQuantity !== undefined) {
+        updateFields.yieldQuantity = Number(yieldQuantity);
+      }
+
+      if (yieldUnit) {
+        updateFields.yieldUnit = yieldUnit || "UNIT";
+      }
     }
 
     await RawMaterial.updateOne({ _id: materialId }, { $set: updateFields });
 
-    res.json({ status: "success", message: "Material updated successfully" });
+    res.json({
+      status: "success",
+      message: "Material updated successfully",
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Update failed", error: err.message });
+    res.status(500).json({
+      message: "Update failed",
+      error: err.message,
+    });
   }
 });
 
@@ -239,11 +396,14 @@ router.patch("/update/:id", authMiddleware, async (req, res) => {
 router.delete("/delete/:id", authMiddleware, async (req, res) => {
   try {
     const deleted = await RawMaterial.findOneAndDelete({ _id: req.params.id });
-    if (!deleted) return res.status(404).json({ message: "Raw material not found" });
+    if (!deleted)
+      return res.status(404).json({ message: "Raw material not found" });
 
     await BranchStock.deleteMany({ rawMaterialId: req.params.id });
 
-    res.json({ message: "Raw material and associated stock deleted successfully" });
+    res.json({
+      message: "Raw material and associated stock deleted successfully",
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Delete failed", error: err.message });
@@ -254,8 +414,9 @@ router.delete("/delete/:id", authMiddleware, async (req, res) => {
 router.get("/low-stock", authMiddleware, async (req, res) => {
   try {
     // Join BranchStock with RawMaterial to compare quantity vs alertAt
-    const stocks = await BranchStock.find({ branchId: req.branchId })
-      .populate("rawMaterialId");
+    const stocks = await BranchStock.find({ branchId: req.branchId }).populate(
+      "rawMaterialId",
+    );
 
     const lowStock = stocks
       .filter((s) => {
@@ -274,7 +435,11 @@ router.get("/low-stock", authMiddleware, async (req, res) => {
       })
       .sort((a, b) => a.quantity - b.quantity);
 
-    res.json({ status: "success", count: lowStock.length, materials: lowStock });
+    res.json({
+      status: "success",
+      count: lowStock.length,
+      materials: lowStock,
+    });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch low stock materials" });
   }
@@ -307,7 +472,11 @@ router.get("/inventory", authMiddleware, async (req, res) => {
       };
     });
 
-    res.json({ status: "success", count: finalHistory.length, history: finalHistory });
+    res.json({
+      status: "success",
+      count: finalHistory.length,
+      history: finalHistory,
+    });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch inventory history" });
   }
@@ -319,11 +488,14 @@ router.post("/add-stock", authMiddleware, async (req, res) => {
     const { materialId, quantity } = req.body;
 
     if (!materialId || !quantity || quantity <= 0) {
-      return res.status(400).json({ message: "Invalid material ID or quantity" });
+      return res
+        .status(400)
+        .json({ message: "Invalid material ID or quantity" });
     }
 
     const material = await RawMaterial.findById(materialId);
-    if (!material) return res.status(404).json({ message: "Raw material not found" });
+    if (!material)
+      return res.status(404).json({ message: "Raw material not found" });
 
     // User types in display units (e.g. 5 kg) → convert to base units (5000 gm)
     const baseQty = convertToBaseUnit(Number(quantity), material.unit);
@@ -350,7 +522,9 @@ router.post("/add-stock", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     console.error("ADD STOCK ERROR:", err);
-    res.status(500).json({ message: "Internal Server Error", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Internal Server Error", error: err.message });
   }
 });
 
@@ -364,13 +538,15 @@ router.post("/adjust-stock", authMiddleware, async (req, res) => {
     }
 
     const material = await RawMaterial.findById(materialId).select("unit name");
-    if (!material) return res.status(404).json({ message: "Raw material not found" });
+    if (!material)
+      return res.status(404).json({ message: "Raw material not found" });
 
     const branchStock = await BranchStock.findOne({
       branchId: req.branchId,
       rawMaterialId: materialId,
     });
-    if (!branchStock) return res.status(404).json({ message: "Stock record not found" });
+    if (!branchStock)
+      return res.status(404).json({ message: "Stock record not found" });
 
     // User types in display units → convert to base units
     const newBaseQty = convertToBaseUnit(Number(newQuantity), material.unit);
@@ -380,7 +556,7 @@ router.post("/adjust-stock", authMiddleware, async (req, res) => {
     await branchStock.save();
 
     await InventoryHistory.create({
-      rawMaterialId: materialId,  // ← correct: materialId from req.body
+      rawMaterialId: materialId, // ← correct: materialId from req.body
       change: difference,
       reason: "ADJUSTMENT",
       branchId: req.branchId,
@@ -425,7 +601,10 @@ router.delete("/inventory/bulk-delete", authMiddleware, async (req, res) => {
 router.delete("/inventory/delete-range", authMiddleware, async (req, res) => {
   try {
     const { from, to } = req.body;
-    if (!from || !to) return res.status(400).json({ message: "from and to dates are required" });
+    if (!from || !to)
+      return res
+        .status(400)
+        .json({ message: "from and to dates are required" });
 
     const fromDate = new Date(from);
     const toDate = new Date(to);
@@ -448,51 +627,70 @@ router.delete("/inventory/delete-range", authMiddleware, async (req, res) => {
 });
 
 // ─── CONSUMPTION SUMMARY ─────────────────────────────────────
-router.get("/inventory/consumption-summary", authMiddleware, async (req, res) => {
-  try {
-    const { from, to } = req.query;
+router.get(
+  "/inventory/consumption-summary",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { from, to } = req.query;
 
-    const match = {
-      branchId: new mongoose.Types.ObjectId(req.branchId),
-      reason: "ORDER",
-    };
-
-    if (from && to) {
-      match.createdAt = {
-        $gte: new Date(from),
-        $lte: new Date(to + "T23:59:59.999Z"),
+      const match = {
+        branchId: new mongoose.Types.ObjectId(req.branchId),
+        reason: "ORDER",
       };
-    }
 
-    const summary = await InventoryHistory.aggregate([
-      { $match: match },
-      { $group: { _id: "$rawMaterialId", totalUsedBase: { $sum: { $abs: "$change" } }, usageCount: { $sum: 1 } } },
-      { $lookup: { from: "rawmaterials", localField: "_id", foreignField: "_id", as: "material" } },
-      { $unwind: "$material" },
-      {
-        $project: {
-          _id: 0,
-          rawMaterialId: "$_id",
-          name: "$material.name",
-          unit: "$material.unit",
-          totalUsedBase: 1,
-          usageCount: 1,
+      if (from && to) {
+        match.createdAt = {
+          $gte: new Date(from),
+          $lte: new Date(to + "T23:59:59.999Z"),
+        };
+      }
+
+      const summary = await InventoryHistory.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: "$rawMaterialId",
+            totalUsedBase: { $sum: { $abs: "$change" } },
+            usageCount: { $sum: 1 },
+          },
         },
-      },
-      { $sort: { totalUsedBase: -1 } },
-    ]);
+        {
+          $lookup: {
+            from: "rawmaterials",
+            localField: "_id",
+            foreignField: "_id",
+            as: "material",
+          },
+        },
+        { $unwind: "$material" },
+        {
+          $project: {
+            _id: 0,
+            rawMaterialId: "$_id",
+            name: "$material.name",
+            unit: "$material.unit",
+            totalUsedBase: 1,
+            usageCount: 1,
+          },
+        },
+        { $sort: { totalUsedBase: -1 } },
+      ]);
 
-    // Convert base units back to display units for frontend
-    const displaySummary = summary.map((s) => ({
-      ...s,
-      totalUsed: toDisplayUnit(s.totalUsedBase, s.unit),
-    }));
+      // Convert base units back to display units for frontend
+      const displaySummary = summary.map((s) => ({
+        ...s,
+        totalUsed: toDisplayUnit(s.totalUsedBase, s.unit),
+      }));
 
-    res.json({ status: "success", summary: displaySummary });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to generate consumption summary" });
-  }
-});
+      res.json({ status: "success", summary: displaySummary });
+    } catch (err) {
+      console.error(err);
+      res
+        .status(500)
+        .json({ message: "Failed to generate consumption summary" });
+    }
+  },
+);
 
 module.exports = router;
